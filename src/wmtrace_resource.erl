@@ -284,7 +284,7 @@ encode_response(ReqData) ->
     {struct, [{"code", integer_to_list(
                          wrq:response_code(ReqData))},
               {"headers", encode_headers(wrq:resp_headers(ReqData))},
-              {"body", lists:flatten(io_lib:format("~s", [wrq:resp_body(ReqData)]))}]}.
+              {"body", lists:flatten(io_lib:format("~p", [wrq:resp_body(ReqData)]))}]}.
 
 encode_headers(Headers) when is_list(Headers) ->
     {struct, [ {N, V} || {N, V} <- Headers ]};
