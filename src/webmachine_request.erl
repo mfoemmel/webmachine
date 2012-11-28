@@ -283,6 +283,15 @@ send_stream_body(Socket, {Data, Next}, SoFar) ->
     Size = send_chunk(Socket, Data),
     send_stream_body(Socket, Next(), Size + SoFar).
 
+send_stream_size_body(Socket, X) -> send_stream_size_body(Socket, X, 0).
+
+send_stream_size_body(Socket, {Data, done}, SoFar) ->
+    send(Socket, Data),
+    SoFar + iolist_size(Data);
+send_stream_size_body(Socket, {Data, Next}, SoFar) ->
+    send(Socket, Data),
+    send_stream_size_body(Socket, Next(), SoFar + iolist_size(Data)).
+
 send_writer_body(Socket, {Encoder, Charsetter, BodyFun}) ->
     put(bytes_written, 0),
     Writer = fun(Data) ->
@@ -330,20 +339,22 @@ send_response(Code, PassedState=#wm_reqstate{reqdata=RD}) ->
     Body0 = wrq:resp_body(RD),
     {Body,Length} = case Body0 of
         {stream, StreamBody} -> {{stream, StreamBody}, chunked};
-        {stream, Size, Fun} -> {{stream, Fun(0, Size-1)}, chunked};
+        {stream, Size, Fun} -> {{stream_size, Fun(0, Size-1)}, Size};
         {writer, WriteBody} -> {{writer, WriteBody}, chunked};
         _ -> {Body0, iolist_size([Body0])}
     end,
     send(PassedState#wm_reqstate.socket,
          [make_version(wrq:version(RD)),
-          make_code(Code), <<"\r\n">> | 
+          make_code(Code), <<"\r\n">> |
          make_headers(Code, Length, RD)]),
-    FinalLength = case wrq:method(RD) of 
+    FinalLength = case wrq:method(RD) of
          'HEAD' -> Length;
-         _ -> 
+         _ ->
             case Body of
                 {stream, Body2} ->
                     send_stream_body(PassedState#wm_reqstate.socket, Body2);
+                {stream_size, Body2} ->
+                    Length = send_stream_size_body(PassedState#wm_reqstate.socket, Body2);
                 {writer, Body2} ->
                     send_writer_body(PassedState#wm_reqstate.socket, Body2);
                 _ ->
