@@ -25,7 +25,8 @@
 -export([start_link/0,
          add_route/1,
          remove_route/1,
-         remove_resource/1]).
+         remove_resource/1,
+         get_routes/0]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -81,6 +82,12 @@ remove_route(Route) ->
 remove_resource(Resource) when is_atom(Resource) ->
     gen_server:call(?SERVER, {remove_resource, Resource}, infinity).
 
+%% @spec get_routes() -> [{[], res, []}]
+%% @doc Retrieve a list of routes and resources set in webmachine's
+%%      route table.
+get_routes() ->
+    gen_server:call(?SERVER, get_routes, infinity).
+
 %% @spec start_link() -> {ok, pid()} | {error, any()}
 %% @doc Starts the webmachine_router gen_server.
 start_link() ->
@@ -91,13 +98,13 @@ init([]) ->
   {ok, []}.
 
 %% @private
+handle_call({remove_resource, Resource}, _From, State) ->
+    DL = filter_by_resource(Resource, get_dispatch_list()),
+    {reply, set_dispatch_list(DL), State};
+
 handle_call(get_routes, _From, State) ->
     {reply, get_dispatch_list(), State};
 
-handle_call({remove_resource, Resource}, _From, State) ->
-    DL = [D || D <- get_dispatch_list(),
-               filter_by_resource(D, Resource)],
-    {reply, set_dispatch_list(DL), State};
 
 handle_call({remove_route, Route}, _From, State) ->
     DL = [D || D <- get_dispatch_list(),
@@ -129,14 +136,21 @@ code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
 %% Internal functions
-filter_by_resource({_, {_, Resource, _}}, Resource) ->
-    false;
-filter_by_resource({_, {_, _, _}}, _Resource) ->
-    true;
-filter_by_resource({_, Resource, _}, Resource) ->
-    false;
-filter_by_resource({_, _, _}, _Resource) ->
-    true.
+
+%% @doc Remove any dispatch rule that directs requests to `Resource'
+filter_by_resource(Resource, Dispatch) ->
+    lists:foldr(filter_by_resource(Resource), [], Dispatch).
+
+filter_by_resource(Resource) ->
+    fun({_, R, _}, Acc) when R == Resource -> % basic dispatch
+            Acc;
+       ({_, _, R, _}, Acc) when R == Resource -> % guarded dispatch
+            Acc;
+       ({Host, Disp}, Acc) -> % host-based dispatch
+            [{Host, filter_by_resource(Resource, Disp)}|Acc];
+       (Other, Acc) -> % dispatch not mentioning this resource
+            [Other|Acc]
+    end.
 
 get_dispatch_list() ->
     case application:get_env(webmachine, dispatch_list) of
@@ -160,10 +174,6 @@ set_dispatch_list(DispatchList) ->
 start() ->
     gen_server:start({local, ?SERVER}, ?MODULE, [], []).
 
-get_routes() ->
-    gen_server:call(?SERVER, get_routes, infinity).
-
-
 add_remove_route_test() ->
     application:set_env(webmachine, dispatch_list, []),
     {ok, Pid} = start(),
@@ -180,11 +190,27 @@ add_remove_resource_test() ->
     PathSpec1 = {["foo"], foo, []},
     PathSpec2 = {["bar"], foo, []},
     PathSpec3 = {["baz"], bar, []},
+    PathSpec4 = {["foo"], fun(_) -> true end, foo, []},
+    PathSpec5 = {["foo"], {webmachine_router, test_guard}, foo, []},
     webmachine_router:add_route(PathSpec1),
     webmachine_router:add_route(PathSpec2),
     webmachine_router:add_route(PathSpec3),
     webmachine_router:remove_resource(foo),
     [PathSpec3] = get_routes(),
+    webmachine_router:add_route(PathSpec4),
+    webmachine_router:remove_resource(foo),
+    [PathSpec3] = get_routes(),
+    webmachine_router:add_route(PathSpec5),
+    webmachine_router:remove_resource(foo),
+    [PathSpec3] = get_routes(),
+    webmachine_router:remove_route(PathSpec3),
+    [begin
+         PathSpec = {"localhost", [HostPath]},
+         webmachine_router:add_route(PathSpec),
+         webmachine_router:remove_resource(foo),
+         [{"localhost", []}] = get_routes(),
+         webmachine_router:remove_route({"localhost", []})
+     end || HostPath <- [PathSpec1, PathSpec4, PathSpec5]],
     exit(Pid, kill).
 
 no_dupe_path_test() ->
